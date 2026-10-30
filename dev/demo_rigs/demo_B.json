@@ -1,0 +1,116 @@
+{
+ "version": 1,
+ "duration_sec": 2,
+ "ambient": {
+  "kelvin": 6500,
+  "intensity_ev": -1.5
+ },
+ "user_prompt": "A nightclub dance floor. Remove the red and orange light from the people completely. Magenta and cyan overhead stage lights now light them and move with the beat. Faces, skin and the leather jacket carry these two colours, and the crowd and bar behind are lit by the same lights. Joyful and psychedelic.",
+ "look": {
+  "preset": "",
+  "film": "",
+  "grade": ""
+ },
+ "removed_originals": [
+  {
+   "id": "original0",
+   "name": "Original light",
+   "type": "area",
+   "original": true,
+   "source": "red club lights",
+   "softness": 0.7,
+   "color": {
+    "hex": "#ff4a3a"
+   },
+   "keys": [
+    {
+     "sec": 0,
+     "azimuth": 0,
+     "elevation": 40,
+     "distance": 1.5,
+     "intensity_ev": 0,
+     "kelvin": 5600,
+     "ease": "smooth"
+    }
+   ]
+  }
+ ],
+ "lights": [
+  {
+   "id": "magenta",
+   "name": "Magenta stage light",
+   "type": "spot",
+   "mode": "generate",
+   "enabled": true,
+   "color": {
+    "hex": "#ff1fb4"
+   },
+   "softness": 0.4,
+   "cone": {
+    "angle": 45,
+    "feather": 0.4
+   },
+   "shadow": true,
+   "motion": null,
+   "prompt": "Magenta overhead stage light on faces, shoulders and arms, with a clear lit side and shadow side",
+   "keys": [
+    {
+     "sec": 0,
+     "azimuth": -55,
+     "elevation": 45,
+     "distance": 1.5,
+     "intensity_ev": 1.5,
+     "kelvin": 5600,
+     "ease": "linear"
+    },
+    {
+     "sec": 2,
+     "azimuth": 40,
+     "elevation": 45,
+     "distance": 1.5,
+     "intensity_ev": 1.5,
+     "kelvin": 5600,
+     "ease": "smooth"
+    }
+   ]
+  },
+  {
+   "id": "cyan",
+   "name": "Cyan stage light",
+   "type": "spot",
+   "mode": "generate",
+   "enabled": true,
+   "color": {
+    "hex": "#12d8ff"
+   },
+   "softness": 0.4,
+   "cone": {
+    "angle": 45,
+    "feather": 0.4
+   },
+   "shadow": true,
+   "motion": null,
+   "prompt": "Cyan overhead stage light from behind the people, tracing their hair and shoulders; the crowd behind turns cyan too",
+   "keys": [
+    {
+     "sec": 0,
+     "azimuth": 145,
+     "elevation": 40,
+     "distance": 1.5,
+     "intensity_ev": 1.8,
+     "kelvin": 5600,
+     "ease": "linear"
+    },
+    {
+     "sec": 2,
+     "azimuth": -145,
+     "elevation": 40,
+     "distance": 1.5,
+     "intensity_ev": 1.8,
+     "kelvin": 5600,
+     "ease": "smooth"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,26 @@
+{
+ "A": {
+  "video": "or_demo_meeting.mp4",
+  "start": 18.0,
+  "seconds": 3.0,
+  "ref": null
+ },
+ "B": {
+  "video": "or_demo_couple.mp4",
+  "start": 5.2,
+  "seconds": 2.0,
+  "ref": null
+ },
+ "C": {
+  "video": "or_demo_woman.mp4",
+  "start": 3.5,
+  "seconds": 3.0,
+  "ref": "or_demo_ref.png"
+ },
+ "D": {
+  "video": "or_demo_woman.mp4",
+  "start": 11.5,
+  "seconds": 3.0,
+  "ref": null
+ }
+}

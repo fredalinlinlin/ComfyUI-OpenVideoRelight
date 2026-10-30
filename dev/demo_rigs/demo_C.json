@@ -1,0 +1,71 @@
+{
+ "version": 1,
+ "duration_sec": 3,
+ "ambient": {
+  "kelvin": 6500,
+  "intensity_ev": -4.0
+ },
+ "user_prompt": "Lighting from the reference: in complete darkness, one very bright, almost overexposed thin warm orange line of light runs along the forehead, nose, lips and chin, tracing the whole profile. The rest of the face and the hair fall into darkness. The sky and the city behind are pure black. Intimate and lonely.",
+ "look": {
+  "preset": "",
+  "film": "",
+  "grade": ""
+ },
+ "removed_originals": [
+  {
+   "id": "original0",
+   "name": "Original light",
+   "type": "area",
+   "original": true,
+   "source": "dusk sky",
+   "softness": 0.7,
+   "color": {
+    "kelvin": 5600
+   },
+   "keys": [
+    {
+     "sec": 0,
+     "azimuth": 180,
+     "elevation": 30,
+     "distance": 1.5,
+     "intensity_ev": 0,
+     "kelvin": 5600,
+     "ease": "smooth"
+    }
+   ]
+  }
+ ],
+ "lights": [
+  {
+   "id": "rim",
+   "name": "Rim light",
+   "type": "area",
+   "shape": "disc",
+   "size": 0.3,
+   "mode": "generate",
+   "enabled": true,
+   "color": {
+    "hex": "#ff8a2e"
+   },
+   "softness": 0.1,
+   "cone": {
+    "angle": 40,
+    "feather": 0.4
+   },
+   "shadow": true,
+   "motion": null,
+   "prompt": "A thin overexposed warm light along the forehead, nose, lips and chin, with a little glow",
+   "keys": [
+    {
+     "sec": 0,
+     "azimuth": -110,
+     "elevation": 0,
+     "distance": 1.5,
+     "intensity_ev": 3.5,
+     "kelvin": 5600,
+     "ease": "smooth"
+    }
+   ]
+  }
+ ]
+}

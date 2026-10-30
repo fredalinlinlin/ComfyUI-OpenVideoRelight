@@ -1,0 +1,42 @@
+{
+ "version": 1,
+ "duration_sec": 3,
+ "ambient": {
+  "kelvin": 7500,
+  "intensity_ev": -1.0
+ },
+ "user_prompt": "A meeting room close to dusk. Low golden sun comes in from outside the windows and cuts across the table. The people and the things on the table throw long shadows. Warm and focused.",
+ "look": {
+  "preset": "",
+  "film": "",
+  "grade": ""
+ },
+ "removed_originals": [],
+ "lights": [
+  {
+   "id": "sun",
+   "name": "Low sun",
+   "type": "directional",
+   "mode": "generate",
+   "enabled": true,
+   "color": {
+    "kelvin": 2800
+   },
+   "softness": 0.15,
+   "shadow": true,
+   "motion": null,
+   "prompt": "Low golden sunset passing through the window frames and landing on the table and carpet",
+   "keys": [
+    {
+     "sec": 0,
+     "azimuth": -80,
+     "elevation": 18,
+     "distance": 1.0,
+     "intensity_ev": 2.4,
+     "kelvin": 2800,
+     "ease": "smooth"
+    }
+   ]
+  }
+ ]
+}

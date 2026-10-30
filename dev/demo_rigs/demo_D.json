@@ -1,0 +1,102 @@
+{
+ "version": 1,
+ "duration_sec": 3,
+ "ambient": {
+  "kelvin": 8000,
+  "intensity_ev": -2.5
+ },
+ "user_prompt": "Deep night, the sky is completely black, with no dusk light left anywhere. Replace the trees, sky and buildings with a city street on a rainy night, full of blurred pink and cyan neon signs. Replace the blue area below with reflections on wet pavement. The person stands at the roadside in the rain, with cyan neon light on the face and hands and pink neon light on the hair and shoulders. Melancholy and cinematic.",
+ "look": {
+  "preset": "",
+  "film": "",
+  "grade": ""
+ },
+ "removed_originals": [
+  {
+   "id": "original0",
+   "name": "Original light",
+   "type": "area",
+   "original": true,
+   "source": "dusk sky",
+   "softness": 0.7,
+   "color": {
+    "kelvin": 5600
+   },
+   "keys": [
+    {
+     "sec": 0,
+     "azimuth": 180,
+     "elevation": 30,
+     "distance": 1.5,
+     "intensity_ev": 0,
+     "kelvin": 5600,
+     "ease": "smooth"
+    }
+   ]
+  }
+ ],
+ "lights": [
+  {
+   "id": "pink",
+   "name": "Neon pink",
+   "type": "area",
+   "shape": "square",
+   "size": 1.2,
+   "mode": "generate",
+   "enabled": true,
+   "color": {
+    "hex": "#ff2d95"
+   },
+   "softness": 0.5,
+   "cone": {
+    "angle": 40,
+    "feather": 0.4
+   },
+   "shadow": true,
+   "motion": null,
+   "prompt": "Pink light from a neon sign, clearly lighting the edges of the hair, shoulders and back",
+   "keys": [
+    {
+     "sec": 0,
+     "azimuth": 130,
+     "elevation": 20,
+     "distance": 1.5,
+     "intensity_ev": 2.2,
+     "kelvin": 5600,
+     "ease": "smooth"
+    }
+   ]
+  },
+  {
+   "id": "cyan",
+   "name": "Neon cyan",
+   "type": "area",
+   "shape": "square",
+   "size": 1.2,
+   "mode": "generate",
+   "enabled": true,
+   "color": {
+    "hex": "#19d3ff"
+   },
+   "softness": 0.6,
+   "cone": {
+    "angle": 40,
+    "feather": 0.4
+   },
+   "shadow": true,
+   "motion": null,
+   "prompt": "Cyan light from a street sign, landing on the face, hands and forearms",
+   "keys": [
+    {
+     "sec": 0,
+     "azimuth": -60,
+     "elevation": 10,
+     "distance": 1.5,
+     "intensity_ev": 1.0,
+     "kelvin": 5600,
+     "ease": "smooth"
+    }
+   ]
+  }
+ ]
+}

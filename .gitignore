@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+HANDOFF.md
+
+# Local development files
+dev/*
+!dev/demo_rigs/
+tests/*
+!tests/test_core.py
+workflows/*_API.json

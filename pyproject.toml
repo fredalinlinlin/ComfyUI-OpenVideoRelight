@@ -1,0 +1,14 @@
+[project]
+name = "comfyui-openvideorelight"
+version = "0.1.0"
+description = "Relight real video from a 3D light stage in ComfyUI (Qwen-Image 2.1 + MiniMax H3)"
+license = { text = "MIT" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/fredalinlinlin/ComfyUI-OpenVideoRelight"
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "Open Video Relight"
+Icon = ""
