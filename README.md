@@ -4,7 +4,7 @@ Relight real video in ComfyUI from a 3D light stage.
 
 You place lights on a sphere around your subject, set how they move, and describe each one in your own words. A vision LM reads the clip and your lights together and writes the prompts. Qwen-Image 2.1 relights a few keyframes, and MiniMax H3 carries that light through the clip while keeping the people and their performance.
 
-<!-- Demo video link goes here. -->
+**[Watch the demo video](https://youtu.be/KJk9S7lCwwU)**
 
 ## Examples
 
