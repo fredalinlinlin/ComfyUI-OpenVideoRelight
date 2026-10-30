@@ -8,14 +8,37 @@ You place lights on a sphere around your subject, set how they move, and describ
 
 ## Examples
 
-Four setups are included in [`dev/demo_rigs`](dev/demo_rigs/):
+The settings for each example are in [`dev/demo_rigs`](dev/demo_rigs/).
 
-| Setup | Type of change | Result |
-|---|---|---|
-| [`demo_A.json`](dev/demo_rigs/demo_A.json) | Small adjustment | A flat office becomes low evening sun |
-| [`demo_B.json`](dev/demo_rigs/demo_B.json) | Moving, multi-colour light | Magenta and cyan stage lights move over dancers |
-| [`demo_C.json`](dev/demo_rigs/demo_C.json) | Lighting reference | A thin warm edge light in a dark room |
-| [`demo_D.json`](dev/demo_rigs/demo_D.json) | New background | A dusk rooftop becomes a rainy neon street |
+### Moving, multi-colour light
+
+Magenta and cyan stage lights replace the original red light, each on its own path. The people and their performance stay. Settings: [`demo_B.json`](dev/demo_rigs/demo_B.json).
+
+![Original dance floor clip next to the relit version with magenta and cyan stage lights](docs/images/moving_light.png)
+
+### Small adjustment
+
+A flat office becomes low evening sun. Settings: [`demo_A.json`](dev/demo_rigs/demo_A.json).
+
+![Original office shot next to the relit version with low evening sun](docs/images/small_change.png)
+
+### New background
+
+A dusk rooftop becomes a rainy neon street, and the light on the person comes from that place. Settings: [`demo_D.json`](dev/demo_rigs/demo_D.json).
+
+![Original rooftop shot next to the relit version on a rainy neon street](docs/images/new_background.png)
+
+### Lighting reference
+
+The LM takes only the light from a reference image. Here a thin warm edge light traces the profile, and everything else falls into darkness. Settings: [`demo_C.json`](dev/demo_rigs/demo_C.json).
+
+![Lighting reference, original shot and the relit result](docs/images/lighting_reference.png)
+
+### Compared with plain MiniMax H3
+
+Same clip, seed, size and steps. Plain H3 with a prompt looks good, but the whole frame changes colour at once, and you can't set where each light is or when it moves. With the stage, each light follows the path you set.
+
+![Plain MiniMax H3 and Open Video Relight at the start and end of the same clip](docs/images/plain_h3_vs_stage.png)
 
 ## How it works
 
@@ -75,12 +98,21 @@ No other custom nodes or Python packages are needed. The LM step uses the Qwen-I
 
 1. In group ②, choose a video and set the start time and duration.
 2. In group ⑤, click **Generate keyframes** once. The clip's original lights appear on the stage in group ③.
-3. Add lights with **+ Add light** or by double-clicking the sphere, and drag them into place. Set colour, softness and motion in the panel below.
-4. Describe each light under **Describe this light**, for example "a passing train". Use **Prompt** for anything else, such as removing a green screen or changing the background.
+3. Add lights with **+ Add light** or by double-clicking the sphere, and drag them into place. Each moving light shows its path from start to end, and the play button previews the movement.
+
+   ![The light stage with a magenta and a cyan light moving on their own paths](docs/images/light_stage.png)
+
+4. Set colour, brightness, softness and motion in the panel below the stage. Describe each light under **Describe this light**, for example "a passing train". Use **Prompt** for anything else, such as removing a green screen or changing the background.
+
+   ![Light settings with motion, a light description, ambient level and the prompt](docs/images/light_controls.png)
+
 5. Click **Generate keyframes** again. Use **Redraw** on any frame you want to try again.
+
+   ![Three generated keyframes, each with a Redraw button](docs/images/keyframes.png)
+
 6. Click **Run** to make the video.
 
-To use a lighting reference, enable the Lighting Reference node in group ③ and choose your image. The LM takes only the light from it.
+To use a lighting reference, enable the Lighting Reference node in group ③ and choose your image. The LM takes only the light from it. See the [example](#lighting-reference) above.
 
 The stage sets each light's colour, strength, timing and direction of travel. Your description says what the light really is and where it comes from, and it wins if the two disagree. **Ambient level** alone sets how dark the unlit areas get.
 
