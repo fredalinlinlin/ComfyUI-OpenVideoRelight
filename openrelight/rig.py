@@ -15,7 +15,6 @@ import copy
 import json
 import math
 
-import torch
 
 DEFAULT_LIGHT = {
     "id": "light",
@@ -411,13 +410,6 @@ def evaluate_light(light, frame, frame_count, fps):
     }
 
 
-def evaluate_rig(rig, frame, frame_count, fps):
-    lights = [evaluate_light(l, frame, frame_count, fps) for l in rig["lights"] if l.get("enabled", True)]
-    amb = rig.get("ambient") or {}
-    ambient = [c * 2.0 ** float(amb.get("intensity_ev", -3.0)) for c in light_color({"kelvin": amb.get("kelvin", 6500)})]
-    return lights, ambient
-
-
 def plan_keyframes(rig, frame_count, fps, max_count=4, still=8.0, ev_deg=10.0, min_gap=3):
     """Keyframe frames for the rig: where its light changes, not spread evenly.
 
@@ -494,26 +486,12 @@ def plan_keyframes(rig, frame_count, fps, max_count=4, still=8.0, ev_deg=10.0, m
     return sorted(set(out + [last]))
 
 
-def to_tensor(v, device):
-    return torch.tensor(v, dtype=torch.float32, device=device)
-
-
 # ---------------------------------------------------------------- original lights
 # A light detected in the clip is a normal light on the stage, flagged "original" and carrying a snapshot of
 # what was detected ("detected"). The user may keep it, move / recolour it, or delete it (its snapshot then
 # goes to rig["removed_originals"]). The mock-up compares the scene lit by the snapshots (the light the clip
 # already has) with the scene lit by the stage as it is now; only the difference changes the picture.
 ORIGINAL_FIELDS = ("azimuth", "elevation", "distance", "intensity_ev", "kelvin")
-
-
-def original_rig(rig):
-    """The light the clip already has: snapshots of every detected light, kept, edited or removed."""
-    snaps = [copy.deepcopy(l["detected"]) for l in rig.get("lights", []) if l.get("original") and l.get("detected")]
-    snaps += [copy.deepcopy(s) for s in rig.get("removed_originals", []) or []]
-    for s in snaps:
-        s["enabled"] = True
-        s.pop("detected", None)
-    return load_rig({"lights": snaps})
 
 
 def original_changed(light, frame_count=121, fps=24.0, tol=(8.0, 8.0, 0.2, 0.3, 300.0)):

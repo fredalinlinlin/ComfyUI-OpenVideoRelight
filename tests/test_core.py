@@ -15,10 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from openrelight import lm  # noqa: E402
 from openrelight import rig as rigmod  # noqa: E402
-from openrelight.detail import detail_lock  # noqa: E402
 from openrelight.geometry import prepare_geometry  # noqa: E402
-from openrelight.prompt import direction_words, rig_to_prompt  # noqa: E402
-from openrelight.shading import detect_dominant_light, fit_sh1, light_map, render, srgb_to_linear  # noqa: E402
+from openrelight.shading import detect_dominant_light, fit_sh1, srgb_to_linear  # noqa: E402
 
 H, W, T = 96, 128, 6
 
@@ -51,58 +49,9 @@ def sphere_scene(light_dir=None):
     return moge, rgb.expand(T, H, W, 3).clone(), hit.float().expand(T, H, W).clone()
 
 
-def _halves(img, t, mask):
-    """Mean brightness of the left and right halves of the masked object."""
-    lum = img[t].mean(-1)
-    m = mask[t] > 0.5
-    left, right = m.clone(), m.clone()
-    left[:, W // 2:] = False
-    right[:, : W // 2] = False
-    return lum[left].mean().item(), lum[right].mean().item()
-
-
 def test_direction_convention():
-    assert direction_words(0, 0) == "the front"
-    assert direction_words(90, 0) == "the right side"
-    assert direction_words(-90, 0) == "the left side"
-    assert "backlight" in direction_words(180, 0)
     d = rigmod._dir_from_angles(90, 0)
     assert d[0] > 0.99  # +X = screen right
-
-
-def test_sweep_moves_light_from_right_to_front():
-    moge, rgb, alpha = sphere_scene()
-    geo = prepare_geometry(moge, alpha=alpha, temporal_sigma=0)
-    rig = rigmod.load_rig({"lights": [{
-        "id": "beam", "type": "point", "mode": "generate", "shadow": False, "softness": 0.0,
-        "keys": [{"t": 0, "azimuth": 90, "elevation": 0, "distance": 2.0, "intensity_ev": 1.0},
-                 {"t": 1, "azimuth": 0, "elevation": 0, "distance": 2.0, "intensity_ev": 1.0}],
-    }], "ambient": {"kelvin": 6500, "intensity_ev": -8}})
-    guide, full, layer, shading, _ = render(rgb, geo, rig, 24.0, {"delight": 0.0, "keep": 0.0, "shadows": False})
-    left0, right0 = _halves(guide, 0, alpha)
-    assert right0 > left0 * 1.5, (left0, right0)
-    centre_last = guide[-1, H // 2 - 5:H // 2 + 5, W // 2 - 5:W // 2 + 5].mean().item()
-    edge_last = guide[-1, H // 2 - 5:H // 2 + 5, W // 2 + 24:W // 2 + 34].mean().item()
-    assert centre_last > edge_last, (centre_last, edge_last)
-    assert layer.abs().max().item() == 0.0  # no composite lights
-
-
-def test_composite_lights_go_to_layer_only():
-    moge, rgb, alpha = sphere_scene()
-    geo = prepare_geometry(moge, alpha=alpha, temporal_sigma=0)
-    rig = rigmod.load_rig({"lights": [{"id": "c", "type": "point", "mode": "composite", "shadow": False,
-                                       "keys": [{"frame": 0, "azimuth": -60, "elevation": 0, "intensity_ev": 1}]}]})
-    guide, full, layer, _, _ = render(rgb, geo, rig, 24.0, {"delight": 0.0, "keep": 1.0, "shadows": False})
-    assert layer.max().item() > 0.05
-    assert (full - guide).abs().max().item() > 0.05
-
-
-def test_keep_original_with_no_lights_is_identity():
-    moge, rgb, alpha = sphere_scene(light_dir=[1.0, -1.0, -1.0])
-    geo = prepare_geometry(moge, alpha=alpha, temporal_sigma=0)
-    rig = rigmod.load_rig({"lights": [], "ambient": {"kelvin": 6500, "intensity_ev": -20}})
-    guide, *_ = render(rgb, geo, rig, 24.0, {"delight": 0.7, "keep": 1.0, "shadows": False})
-    assert (guide - rgb).abs().max().item() < 0.02
 
 
 def test_detect_light_direction():
@@ -115,101 +64,13 @@ def test_detect_light_direction():
     assert el > 5, el
 
 
-def test_shadows_run():
-    moge, rgb, alpha = sphere_scene()
-    geo = prepare_geometry(moge, alpha=alpha, temporal_sigma=1.0)
-    rig = rigmod.load_rig(None, preset="sweep_right_to_front")
-    guide, *_ = render(rgb, geo, rig, 24.0, {"shadows": True, "scope": "all"})
-    assert torch.isfinite(guide).all()
-
-
-def test_detail_lock_keeps_original_detail_and_takes_generated_light():
-    torch.manual_seed(0)
-    orig = (torch.rand(4, 64, 80, 3) * 0.2 + 0.4)            # textured, flat light
-    ramp = torch.linspace(0.3, 1.6, 80).view(1, 1, 80, 1)   # generated: light from the right, blurry
-    gen_lin = srgb_to_linear(torch.full((4, 32, 40, 3), 0.5)) * torch.nn.functional.interpolate(
-        ramp.permute(0, 3, 1, 2), size=(32, 40)).permute(0, 2, 3, 1)
-    gen = gen_lin.clamp(0, 1) ** (1 / 2.2)
-    out = detail_lock(orig, gen, radius=0.08, strength=1.0, highlights=0.0, device=torch.device("cpu"))
-    assert out.shape == orig.shape
-    left = out[:, :, :20].mean().item()
-    right = out[:, :, -20:].mean().item()
-    assert right > left * 1.3, (left, right)
-    hf_orig = orig - torch.nn.functional.avg_pool2d(orig.permute(0, 3, 1, 2), 5, 1, 2).permute(0, 2, 3, 1)
-    hf_out = out - torch.nn.functional.avg_pool2d(out.permute(0, 3, 1, 2), 5, 1, 2).permute(0, 2, 3, 1)
-    corr = torch.corrcoef(torch.stack([hf_orig.flatten(), hf_out.flatten()]))[0, 1].item()
-    assert corr > 0.8, corr
-
-
-def test_prompt_mentions_sweep_with_times():
-    rig = rigmod.load_rig(None, preset="sweep_right_to_front")
-    text = rig_to_prompt(rig, frame_count=121, fps=24.0)
-    assert "Only the lighting changes" in text
-    assert "sweeps from the right side to the front" in text
-    assert "0.0s to 3.0s" in text
-
-
 def test_flicker_and_strobe_change_intensity():
     rig = rigmod.load_rig(None, preset="police")
-    vals = [rigmod.evaluate_rig(rig, f, 48, 24.0)[0][0]["intensity"] for f in range(48)]
+    vals = [rigmod.evaluate_light(rig["lights"][0], f, 48, 24.0)["intensity"] for f in range(48)]
     assert min(vals) == 0.0 and max(vals) > 1.0
     rig = rigmod.load_rig(None, preset="firelight")
-    vals = [rigmod.evaluate_rig(rig, f, 48, 24.0)[0][0]["intensity"] for f in range(48)]
+    vals = [rigmod.evaluate_light(rig["lights"][0], f, 48, 24.0)["intensity"] for f in range(48)]
     assert max(vals) - min(vals) > 0.3
-
-
-def test_light_map_shows_where_the_light_lands():
-    moge, _, alpha = sphere_scene()
-    geo = prepare_geometry(moge, alpha=alpha, temporal_sigma=0)
-    rig = rigmod.load_rig({"lights": [{
-        "id": "beam", "type": "point", "mode": "generate", "softness": 0.0,
-        "keys": [{"t": 0, "azimuth": 90, "elevation": 0, "distance": 2.0, "intensity_ev": 0.0},
-                 {"t": 1, "azimuth": -90, "elevation": 0, "distance": 2.0, "intensity_ev": 0.0}],
-    }]})
-    maps = light_map(geo, rig, T, 24.0)
-    assert maps.shape == (T, H, W, 3) and maps.min() >= 0 and maps.max() <= 1
-    left0, right0 = _halves(maps, 0, alpha)
-    left1, right1 = _halves(maps, T - 1, alpha)
-    assert right0 > left0 * 3 and left1 > right1 * 3, (left0, right0, left1, right1)
-
-
-def test_light_map_shadows_and_relief():
-    moge, _, alpha = sphere_scene()
-    geo = prepare_geometry(moge, alpha=alpha, temporal_sigma=0)
-    rig = rigmod.load_rig({"lights": [{
-        "id": "key", "type": "point", "mode": "generate", "softness": 0.0,
-        "keys": [{"t": 0, "azimuth": 70, "elevation": 0, "distance": 2.0, "intensity_ev": 0.0}],
-    }]})
-    flat = light_map(geo, rig, T, 24.0, relief=0.0)
-    full = light_map(geo, rig, T, 24.0, relief=1.0)
-    # inside the sphere, away from the silhouette (edges take the darker neighbour)
-    lit = torch.nn.functional.max_pool2d((alpha[0] < 0.5).float()[None, None], 9, 1, 4)[0, 0] == 0
-    # an even wash has less contrast across the sphere than full form
-    assert flat[0].mean(-1)[lit].std() < full[0].mean(-1)[lit].std() * 0.5
-    # shadows only take light away, and strength 0 is the same as no shadows
-    off = light_map(geo, rig, T, 24.0, shadow_strength=0.0)
-    assert (off - full).abs().max() < 1e-6
-    shad = light_map(geo, rig, T, 24.0, shadow_strength=1.0, shadow_length=1.0)
-    assert shad.sum() < full.sum()
-
-
-def test_no_bright_outline_at_silhouettes():
-    # a pixel between the sphere and the wall, with an in-between depth and a normal facing the camera,
-    # is what MoGe gives at silhouettes; under a frontal light it would draw a bright outline
-    moge, _, alpha = sphere_scene()
-    edge = (alpha[0] > 0.5) & ~torch.nn.functional.max_pool2d(
-        (alpha[0] < 0.5).float()[None, None], 3, 1, 1)[0, 0].bool().logical_not()
-    ys, xs = edge.nonzero(as_tuple=True)
-    for t in range(T):
-        moge["points"][t, ys, xs] = moge["points"][t, ys, xs] * 1.5
-        moge["normal"][t, ys, xs] = torch.tensor([0.0, 0.0, -1.0])
-    geo = prepare_geometry(moge, alpha=alpha, temporal_sigma=0)
-    rig = rigmod.load_rig({"lights": [{"id": "f", "type": "point", "mode": "generate", "softness": 0.0,
-                                       "keys": [{"t": 0, "azimuth": 0, "elevation": 0, "distance": 2.0}]}]})
-    m = light_map(geo, rig, T, 24.0)[0].mean(-1)
-    # the sphere's limb just inside the outline faces sideways and is dark; the outline must not outshine it
-    near = (torch.nn.functional.max_pool2d((alpha[0] < 0.5).float()[None, None], 9, 1, 4)[0, 0] > 0)         & (alpha[0] > 0.5) & ~edge
-    assert m[edge].mean() < m[near].mean(), (m[edge].mean(), m[near].mean())
 
 
 def test_fit_pad_and_unpad_line_up_pixel_for_pixel():
@@ -235,79 +96,6 @@ def test_fit_pad_keeps_every_frame_on_h3_grid():
     assert unpad(x, info).shape[0] == 49
 
 
-def test_face_detail_lock_keeps_original_detail_and_takes_new_light():
-    from openrelight.facelock import face_detail_lock, gaussian_blur
-    torch.manual_seed(0)
-    Tn, Hn, Wn = 3, 64, 96
-    # original: dark, with fine texture (the "features"); generated: half resolution, brighter on the
-    # right (the new light), its own different texture (a redrawn face)
-    orig = (0.15 + 0.08 * torch.rand(Tn, Hn, Wn, 3)).clamp(0, 1)
-    ramp = torch.linspace(1.0, 3.0, Wn // 2).view(1, 1, -1, 1)
-    gen_lin = srgb_to_linear(torch.full((Tn, Hn // 2, Wn // 2, 3), 0.17)) * ramp
-    gen = (gen_lin.clamp(0, 1) ** (1 / 2.2) + 0.05 * torch.rand(Tn, Hn // 2, Wn // 2, 3)).clamp(0, 1)
-    mask = torch.zeros(Tn, Hn, Wn)
-    mask[:, 16:48, 24:72] = 1.0
-    out = face_detail_lock(orig, gen, mask, detail_px=2.0, grow=0, feather=0.0, method="frequency")
-    assert out.shape == orig.shape
-    inside = (slice(None), slice(20, 44), slice(28, 68))
-    hf = lambda x: (x - gaussian_blur(x.permute(0, 3, 1, 2), 2.0).permute(0, 2, 3, 1))[inside]  # noqa: E731
-    corr = torch.corrcoef(torch.stack([hf(orig).flatten(), hf(out).flatten()]))[0, 1].item()
-    assert corr > 0.8, corr                                               # features are the original's
-    up = torch.nn.functional.interpolate(gen.permute(0, 3, 1, 2), size=(Hn, Wn), mode="bicubic",
-                                         align_corners=False, antialias=True).permute(0, 2, 3, 1).clamp(0, 1)
-    # light is the generated one: same left/right brightness ratio as the generated clip, not the flat original
-    ratio = lambda x: x[:, 20:44, 56:68].mean().item() / x[:, 20:44, 28:40].mean().item()  # noqa: E731
-    assert abs(ratio(out) - ratio(up)) < 0.03 and ratio(out) > 1.08, (ratio(out), ratio(up), ratio(orig))
-    assert (out[:, :8] - up[:, :8]).abs().max() < 1e-4                   # outside the mask: generated, upscaled
-
-
-def test_guided_lock_takes_original_edges_without_outlines():
-    from openrelight.facelock import face_detail_lock
-    Tn, Hn, Wn = 2, 64, 96
-    # original: a sharp dark/bright edge (a face profile) in flat dim light
-    orig = torch.full((Tn, Hn, Wn, 3), 0.15)
-    orig[:, :, 48:] = 0.35
-    # generated, half resolution: the same edge but blurry, and the new light brightened the dark side
-    # more than the face (so the original's step must not be pasted on at its old contrast)
-    gen = torch.full((Tn, Hn // 2, Wn // 2, 3), 0.45)
-    gen[:, :, 24:] = 0.6
-    gen = torch.nn.functional.avg_pool2d(gen.permute(0, 3, 1, 2), 5, 1, 2,
-                                         count_include_pad=False).permute(0, 2, 3, 1)
-    out = face_detail_lock(orig, gen, torch.ones(Tn, Hn, Wn), grow=0, feather=0.0, method="guided", radius=4, eps=1e-4)
-    row = out[0, 32, :, 0]
-    assert abs(row[:40].mean() - 0.45) < 0.03 and abs(row[56:].mean() - 0.6) < 0.03, row   # generated light
-    up = torch.nn.functional.interpolate(gen.permute(0, 3, 1, 2), size=(Hn, Wn), mode="bicubic",
-                                         align_corners=False)[0, 0, 32]
-    assert row[48] - row[47] > 3 * up.diff().abs().max(), (row[48] - row[47], up.diff().abs().max())  # sharp edge
-    assert row.min() > 0.4 and row.max() < 0.65, (row.min(), row.max())                    # no outline
-    # reversed contrast (a head against a window that the new light made darker than the head): the
-    # original's edge must not be pasted on inverted; the generated edge is kept
-    rev = torch.full((Tn, Hn // 2, Wn // 2, 3), 0.6)
-    rev[:, :, 24:] = 0.3
-    rev = torch.nn.functional.avg_pool2d(rev.permute(0, 3, 1, 2), 5, 1, 2,
-                                         count_include_pad=False).permute(0, 2, 3, 1)
-    out = face_detail_lock(orig, rev, torch.ones(Tn, Hn, Wn), grow=0, feather=0.0, method="guided", radius=4, eps=1e-4)
-    up = torch.nn.functional.interpolate(rev.permute(0, 3, 1, 2), size=(Hn, Wn), mode="bicubic",
-                                         align_corners=False, antialias=True).permute(0, 2, 3, 1).clamp(0, 1)
-    assert (out[0, 32, 40:56, 0] - up[0, 32, 40:56, 0]).abs().max() < 0.03
-
-
-def test_light_guard_removes_invented_light_only():
-    from openrelight.guard import light_guard
-    Tn, Hn, Wn = 2, 48, 64
-    orig = torch.full((Tn, Hn, Wn, 3), 0.2)
-    lmap = torch.zeros(Tn, Hn, Wn, 3)
-    lmap[:, :, 40:] = 1.0                       # the rig's light lands on the right (map peak)
-    gen = orig.clone()
-    gen[:, :, 40:] = 0.6                        # real new light
-    gen[:, :20, 5:20] = 0.7                     # invented beam where no light lands
-    gen[:, 30:, :20] = 0.1                      # darkening is allowed
-    out = light_guard(gen, orig, lmap, softness=1.0)
-    assert (out[:, :, 46:] - gen[:, :, 46:]).abs().max() < 0.01           # real light kept
-    assert out[:, 4:16, 8:16].mean() < 0.23                                # invented beam capped near the original
-    assert (out[:, 34:, 2:16] - gen[:, 34:, 2:16]).abs().max() < 0.01     # darker areas untouched
-
-
 def test_light_stage_json_is_read_as_written():
     # what web/js/lightstage.js writes: keys in seconds with every animated field, hex gels, effects
     ui = {"version": 1, "duration_sec": 4, "ambient": {"kelvin": 7000, "intensity_ev": -3},
@@ -327,8 +115,6 @@ def test_light_stage_json_is_read_as_written():
     assert mid["color"][0] > 0.9 and mid["color"][2] < 0.3                  # the gel, not 5600 K
     vals = [rigmod.evaluate_light(rig["lights"][0], f, 97, 24.0)["intensity"] for f in range(24)]
     assert min(vals) == 0.0 and max(vals) > 1.0                             # strobe on and off
-    text = rig_to_prompt(rig, 97, 24.0)
-    assert "rainy night" in text and "0.0s to 2.0s" in text
 
 
 def test_template_prompts_follow_the_rig():
@@ -355,62 +141,23 @@ def _lit_sphere_from_right():
     return geo, rgb, alpha
 
 
-def test_detect_original_light_and_difference_mockup():
+def test_detect_original_light_and_its_prompts():
     import copy
 
     from openrelight.detect import detect_original_lights
-    from openrelight.shading import relight_mockup
     geo, rgb, alpha = _lit_sphere_from_right()
     rig, report = detect_original_lights(rgb, geo)
     assert len(rig["lights"]) == 1 and rig["lights"][0]["original"], report
     k = rig["lights"][0]["keys"][0]
     assert 30 < k["azimuth"] < 120, report                              # from the right
-    m = alpha[0] > 0.5
-
-    def halves(img):
-        return _halves(img, 0, alpha)
-
-    # left as detected: the picture does not change
-    _, same = relight_mockup(rgb, geo, rig, T, 24.0, soften=0.0)
-    assert (same[0][m] - rgb[0][m]).abs().mean() < 0.02
-    # moved to the left: the right half darkens, the left half brightens
     moved = copy.deepcopy(rig)
     moved["lights"][0]["keys"][0]["azimuth"] = -k["azimuth"]
-    _, mv = relight_mockup(rgb, geo, moved, T, 24.0, soften=0.0)
-    (l0, r0), (l1, r1) = halves(rgb), halves(mv)
-    assert l1 > l0 * 1.2 and r1 < r0 * 0.9, (l0, r0, l1, r1)
-    # deleted: what it lit gets darker
     gone = copy.deepcopy(rig)
     gone["removed_originals"] = [gone["lights"].pop(0)["detected"]]
-    _, dl = relight_mockup(rgb, geo, gone, T, 24.0, soften=0.0)
-    assert halves(dl)[1] < r0 * 0.8                                       # the unexplained ambient share stays
     # prompts: unchanged = not mentioned, moved = a change, deleted = switched off
     assert "existing main light" not in lm.keyframe_prompt(rig, 0, T, 24.0)
     assert "existing main light, changed" in lm.keyframe_prompt(moved, 0, T, 24.0)
     assert "switched off" in lm.video_prompt(gone, T, 24.0)
-
-
-def test_reference_lights_two_colours():
-    from openrelight.detect import detect_reference_lights
-    moge, _, alpha = sphere_scene()
-    N = moge["normal"][0]
-    rgb = torch.full(N.shape, 0.02)
-    for d, col in (([-0.9, -0.15, -0.4], [1.0, 0.15, 0.85]), ([0.9, -0.15, -0.4], [0.1, 0.8, 1.0])):
-        L = torch.tensor(d) / torch.tensor(d).norm()
-        rgb = rgb + (N * L).sum(-1).clamp_min(0)[..., None] * torch.tensor(col) * 0.8
-    rgb = rgb.clamp(0, 1) ** (1 / 2.2)
-    geo = prepare_geometry(moge, alpha=alpha, temporal_sigma=0)
-    rig, report = detect_reference_lights(rgb, geo)
-    lights = rig["lights"]
-    assert len(lights) == 2, report
-    by_side = sorted(lights, key=lambda l: l["keys"][0]["azimuth"])
-    left, right = by_side
-    assert left["keys"][0]["azimuth"] < -30 and right["keys"][0]["azimuth"] > 30, report
-    hexes = [l["color"].get("hex", "") for l in (left, right)]
-    r, b = int(hexes[0][1:3], 16), int(hexes[0][5:7], 16)       # magenta: red and blue high
-    g = int(hexes[1][3:5], 16)                                   # cyan: green high
-    assert r > 180 and b > 150 and g > 150, (hexes, report)
-    assert all(l["reference"] for l in lights)
 
 
 def test_detect_reports_even_light():
@@ -424,26 +171,9 @@ def test_detect_reports_even_light():
 def test_offscreen_note():
     rig = rigmod.load_rig(None, preset="sweep_right_to_front")
     assert lm.offscreen_note(rig, 121, 24.0) == lm.OFFSCREEN_NOTE
-    assert lm.OFFSCREEN_NOTE in lm.keyframe_brief(rig, 60, 121, 24.0)
     back = rigmod.load_rig({"lights": [{"id": "b", "type": "spot", "mode": "generate",
                                         "keys": [{"t": 0, "azimuth": 180, "elevation": 5, "distance": 2.0}]}]})
     assert lm.offscreen_note(back, 24, 24.0) == ""
-
-
-def test_keyframe_brief_follows_the_sweep():
-    rig = rigmod.load_rig(None, preset="sweep_right_to_front")
-    first = lm.keyframe_brief(rig, 0, 121, 24.0)
-    last = lm.keyframe_brief(rig, 120, 121, 24.0)
-    assert "right edge of the frame" in first and "split lighting" in first, first
-    assert "from the camera position" in last and "head-on" in last, last
-
-
-def test_clean_lm_output_keeps_only_the_answer():
-    answer = "Relight the input image with a cool spotlight from the right."
-    assert lm.clean_lm_output("</think>\n\n" + answer) == answer
-    reasoning = "The user's instruction is in English.\n\nLet me analyze.\n\nDraft: ...\n\n\n" + answer
-    assert lm.clean_lm_output(reasoning) == answer
-    assert lm.clean_lm_output('{"' + answer + '"}') == answer
 
 
 class _StubLM:
@@ -498,22 +228,6 @@ def test_director_keeps_light_sources_out_of_frame():
     # the plan comes first, then each keyframe alone with its one image, and the raw text keeps them apart
     assert len(stub.asked) == 3 and "soft warm light from frame left" in stub.asked[1] and "KEYFRAME 2:" in raw
     assert stub.asked[0].count("<|image_pad|>") == 2 and stub.asked[2].count("<|image_pad|>") == 1
-
-
-def test_green_screen_key_and_restore():
-    from openrelight.key import key_composite, restore_background
-    img = torch.zeros(2, 40, 60, 3)
-    img[..., 1] = 0.8                                   # green screen
-    img[:, 10:30, 20:40] = torch.tensor([0.5, 0.45, 0.4])   # a grey-brown subject
-    plate = torch.zeros(1, 20, 30, 3)
-    plate[..., 2] = 1.0                                 # blue sky
-    comp, alpha = key_composite(img, plate, erode=0, matte_blur=0)
-    assert alpha[:, 15:25, 25:35].min() > 0.99 and alpha[:, :5, :5].max() < 0.01
-    assert comp[0, 2, 2, 2] > 0.99 and abs(float(comp[0, 20, 30, 0]) - 0.5) < 1e-3
-    # after a relight the plate goes back over the screen area, the subject keeps its new light
-    relit = torch.full_like(img, 0.2)
-    back = restore_background(relit, alpha, plate)
-    assert back[0, 2, 2, 2] > 0.99 and abs(float(back[0, 20, 30, 0]) - 0.2) < 1e-3
 
 
 def test_lm_light_reading_maps_and_merges():

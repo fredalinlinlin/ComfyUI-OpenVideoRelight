@@ -13,19 +13,13 @@ from comfy_api.latest import ComfyExtension, io, ui
 from .openrelight import lm
 from .openrelight import rig as rigmod
 from .openrelight.fit import FRAME_GRIDS, fit_pad, unpad
-from .openrelight.detail import detail_lock
-from .openrelight.guard import light_guard
 from .openrelight.geometry import depth_preview, normal_preview, prepare_geometry
-from .openrelight.prompt import rig_to_prompt
-from .openrelight.detect import detect_original_lights, detect_reference_lights
+from .openrelight.detect import detect_original_lights
 from .openrelight.clip import clip_sheet
-from .openrelight.shading import (detect_dominant_light, fit_sh1, light_map, light_mockup, linear_to_srgb, relight_mockup,
-                                  render, srgb_to_linear)
 
 LightRigType = io.Custom("OR_LIGHT_RIG")
 GeometryType = io.Custom("OR_GEOMETRY")
 MoGeGeometry = io.Custom("MOGE_GEOMETRY")
-MoGeModelType = io.Custom("MOGE_MODEL")
 
 CATEGORY = "OpenRelight"
 
@@ -55,8 +49,8 @@ class LightRig(io.ComfyNode):
                                    tooltip="Detect Original Light. Used while the light stage is still empty; the editor "
                                            "also offers it to apply after each analysis run."),
                 LightRigType.Input("reference_lights", optional=True,
-                                   tooltip="Reference Lights: the lights found in a lighting reference image. The "
-                                           "editor puts them on the stage (switching the original light off)."),
+                                   tooltip="Optional: another light rig to add as reference lights. They join the "
+                                           "rig in this run and the original light is switched off."),
             ],
             outputs=[LightRigType.Output(display_name="light_rig"), io.String.Output(display_name="rig_json")],
         )
@@ -114,196 +108,6 @@ class GeometryPrep(io.ComfyNode):
         return io.NodeOutput(geo, _out(normal_preview(geo)), _out(depth_preview(geo)))
 
 
-class LightPass(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_LightPass",
-            display_name="Light Pass (OpenRelight)",
-            category=CATEGORY,
-            description="Relight every frame from the rig. 'guide' feeds the video model; 'composite_layer' holds composite-mode lights for DetailLock.",
-            inputs=[
-                io.Image.Input("images"),
-                GeometryType.Input("geometry"),
-                LightRigType.Input("light_rig"),
-                io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=0.001),
-                io.Float.Input("delight", default=0.6, min=0.0, max=1.0, step=0.05,
-                               tooltip="How much of the original light to estimate and remove. 0 = only add light."),
-                io.Float.Input("keep_original", default=0.35, min=0.0, max=1.5, step=0.05,
-                               tooltip="How much of the original lighting stays."),
-                io.Combo.Input("scope", options=["subject", "all"], default="subject",
-                               tooltip="'subject' lights only inside the mask; 'all' relights the whole frame (interiors)."),
-                io.Boolean.Input("shadows", default=False,
-                                 tooltip="Experimental screen-space shadows. The video model copies guide artefacts, so leave off unless the shot needs cast shadows."),
-                io.Float.Input("shadow_strength", default=0.85, min=0.0, max=1.0, step=0.05),
-                io.Float.Input("specular", default=0.1, min=0.0, max=2.0, step=0.05,
-                               tooltip="Specular in the guide. Keep low: the video model copies it, and fabric/skin turn plastic above ~0.2."),
-                io.Float.Input("roughness", default=0.6, min=0.05, max=1.0, step=0.05),
-                io.Float.Input("exposure_ev", default=0.0, min=-4.0, max=4.0, step=0.1),
-            ],
-            outputs=[io.Image.Output(display_name="guide"), io.Image.Output(display_name="full_preview"),
-                     io.Image.Output(display_name="composite_layer"), io.Image.Output(display_name="shading")],
-        )
-
-    @classmethod
-    def execute(cls, images, geometry, light_rig, fps, delight, keep_original, scope, shadows, shadow_strength,
-                specular, roughness, exposure_ev) -> io.NodeOutput:
-        params = {"delight": delight, "keep": keep_original, "scope": scope, "shadows": shadows,
-                  "shadow_strength": shadow_strength, "spec_strength": specular, "roughness": roughness,
-                  "exposure_ev": exposure_ev}
-        pbar = comfy.utils.ProgressBar(images.shape[0])
-        guide, full, layer, shading, _ = render(images, geometry, light_rig, fps, params,
-                                                progress=lambda i, n: pbar.update_absolute(i, n))
-        return io.NodeOutput(_out(guide), _out(full), _out(layer), _out(shading))
-
-
-class RigToPrompt(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_RigToPrompt",
-            display_name="Rig to Prompt (OpenRelight)",
-            category=CATEGORY,
-            description="Describe the rig in words, with timestamps for moving lights, for MiniMax H3 / LTX.",
-            inputs=[
-                LightRigType.Input("light_rig"),
-                io.Int.Input("frame_count", default=121, min=1, max=10000),
-                io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=0.001),
-                io.String.Input("ref_tag", default="<Video 1>", tooltip="How the prompt refers to the original clip."),
-                io.Boolean.Input("preamble", default=True, tooltip="Start with 'keep identity, motion and timing; only lighting changes'."),
-                io.Boolean.Input("include_composite", default=False,
-                                 tooltip="Also describe composite-mode lights (normally they are added after generation)."),
-                io.String.Input("extra", multiline=True, default=""),
-            ],
-            outputs=[io.String.Output(display_name="prompt")],
-        )
-
-    @classmethod
-    def execute(cls, light_rig, frame_count, fps, ref_tag, preamble, include_composite, extra) -> io.NodeOutput:
-        return io.NodeOutput(rig_to_prompt(light_rig, frame_count, fps, ref_tag=ref_tag, preamble=preamble,
-                                           include_composite=include_composite, extra=extra))
-
-
-class LightingBrief(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_LightingBrief",
-            display_name="Lighting Brief for LM (OpenRelight)",
-            category=CATEGORY,
-            description="Turn the rig into a brief plus system prompt for core 'Generate Text'. "
-                        "keyframe: the Qwen-Image 2.1 prompt enhancer writes the edit for one frame. "
-                        "video: Qwen3-VL writes the MiniMax H3 prompt, keeping the timestamps.",
-            inputs=[
-                LightRigType.Input("light_rig"),
-                io.Combo.Input("target", options=["keyframe", "video"], default="keyframe"),
-                io.Int.Input("frame_idx", default=0, min=0, max=10000, tooltip="keyframe: which frame of the clip is relit."),
-                io.Int.Input("frame_count", default=121, min=1, max=10000),
-                io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=0.001),
-                io.Boolean.Input("mockup", default=True,
-                                 tooltip="keyframe: <image1> is the Light Map 'mockup' frame (light already painted on), "
-                                         "so where the light falls comes from the geometry, not from words."),
-                io.String.Input("extra", multiline=True, default=""),
-            ],
-            outputs=[io.String.Output(display_name="brief"), io.String.Output(display_name="system_prompt"),
-                     io.String.Output(display_name="after_lm",
-                                      tooltip="Appended after the LM's rewrite (Clean LM Text 'append'), so the LM can't drop it.")],
-        )
-
-    @classmethod
-    def execute(cls, light_rig, target, frame_idx, frame_count, fps, mockup, extra) -> io.NodeOutput:
-        if target == "keyframe":
-            after = " ".join(t for t in (lm.MOCKUP_NOTE if mockup else "",
-                                         lm.offscreen_note(light_rig, frame_count, fps, frames=[frame_idx])) if t)
-            return io.NodeOutput(lm.keyframe_brief(light_rig, frame_idx, frame_count, fps, mockup=mockup, extra=extra),
-                                 lm.qwen_edit_system_prompt(), after)
-        return io.NodeOutput(lm.video_brief(light_rig, frame_count, fps, extra=extra), lm.VIDEO_LM_SYSTEM,
-                             lm.offscreen_note(light_rig, frame_count, fps))
-
-
-class LightMap(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_LightMap",
-            display_name="Light Map (OpenRelight)",
-            category=CATEGORY,
-            description="Preview of the light stage on the clip, and 'mockup': the clip lit as the stage says, for the "
-                        "image editor as a rough guide to where the light comes from (softened: the geometry knows "
-                        "directions, not materials). Detected lights left as detected change nothing; moved ones darken "
-                        "where they were and brighten where they go; deleted ones darken what they lit.",
-            inputs=[
-                GeometryType.Input("geometry"),
-                LightRigType.Input("light_rig"),
-                io.Int.Input("frame_count", default=121, min=1, max=10000),
-                io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=0.001),
-                io.Image.Input("images", optional=True,
-                               tooltip="The clip to paint the light onto for 'mockup', at any resolution (full res for keyframes)."),
-                io.Float.Input("ambient", default=0.3, min=0.05, max=1.0, step=0.05,
-                               tooltip="Share of the clip's light that no detected light explains (it always stays). "
-                                       "Lower = new lights look stronger."),
-                io.Float.Input("soften", default=0.03, min=0.0, max=0.1, step=0.005,
-                               tooltip="Blur of the painted light, as a fraction of the frame: keeps where the light goes, "
-                                       "drops the hard CG shading edge. 0 = sharp."),
-                io.Float.Input("shadow_strength", default=0.8, min=0.0, max=1.0, step=0.05,
-                               tooltip="Cast shadows from the scene's depth: what is in front blocks the light for what is "
-                                       "behind it. 0 = off. Only things visible in the frame cast shadows."),
-                io.Float.Input("shadow_length", default=0.6, min=0.05, max=2.0, step=0.05,
-                               tooltip="How far shadows reach, as a fraction of the camera-to-subject distance."),
-                io.Float.Input("relief", default=1.0, min=0.0, max=1.0, step=0.05,
-                               tooltip="How much the light follows the shape of faces and bodies. "
-                                       "1 = full form (bright where surfaces face the light), 0 = an even wash inside the beam."),
-                io.Int.Input("preview_frames", default=4, min=0, max=12,
-                             tooltip="Frames shown on the node (light map above, mockup below), evenly spread over the clip. 0 = none."),
-            ],
-            outputs=[io.Image.Output(display_name="light_map"),
-                     io.Image.Output(display_name="mockup",
-                                     tooltip="The clip with the light painted on, at the images' resolution: the image editor's <image1>.")],
-        )
-
-    @classmethod
-    def execute(cls, geometry, light_rig, frame_count, fps, ambient, soften, shadow_strength, shadow_length, relief,
-                preview_frames, images=None) -> io.NodeOutput:
-        pbar = comfy.utils.ProgressBar(frame_count)
-        srgb, mockup = relight_mockup(images, geometry, light_rig, frame_count, fps, ambient=ambient, soften=soften,
-                                      progress=lambda i, n: pbar.update_absolute(i, n), shadow_strength=shadow_strength,
-                                      shadow_length=shadow_length, relief=relief)
-        if preview_frames <= 0:
-            return io.NodeOutput(_out(srgb), _out(mockup))
-        return io.NodeOutput(_out(srgb), _out(mockup), ui=ui.PreviewImage(_preview_sheet(srgb, mockup, preview_frames), cls=cls))
-
-
-class LightGuard(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_LightGuard",
-            display_name="Light Guard (OpenRelight)",
-            category=CATEGORY,
-            description="Stop invented light: a generated frame may only get brighter than the original where the rig's "
-                        "light lands (Light Map). Removes light sources and beams the image/video model made up, e.g. a "
-                        "cone from a lamp in the shot. Never darkens. Works on keyframes and on whole clips.",
-            inputs=[
-                io.Image.Input("images", tooltip="Generated / relit frames."),
-                io.Image.Input("original", tooltip="The original frames (same frames, any resolution)."),
-                io.Image.Input("light_map", tooltip="Light Map 'light_map' output for the same frames."),
-                io.Float.Input("margin", default=0.15, min=0.0, max=2.0, step=0.05,
-                               tooltip="How much brighter than the original areas without new light may get."),
-                io.Float.Input("allowance", default=12.0, min=0.0, max=64.0, step=0.5,
-                               tooltip="How much brighter areas with new light may get, per unit of light map."),
-                io.Float.Input("softness", default=4.0, min=0.0, max=32.0, step=0.5,
-                               tooltip="Pixels over which a capped area fades in."),
-            ],
-            outputs=[io.Image.Output(display_name="images")],
-        )
-
-    @classmethod
-    def execute(cls, images, original, light_map, margin, allowance, softness) -> io.NodeOutput:
-        out = light_guard(images, original, light_map, margin=margin, allowance=allowance, softness=softness,
-                          device=comfy.model_management.get_torch_device())
-        return io.NodeOutput(_out(out))
-
-
 PadInfoType = io.Custom("OR_LTX_PAD_INFO")
 
 
@@ -356,20 +160,6 @@ class Unpad(io.ComfyNode):
         return io.NodeOutput(_out(unpad(images, pad_info, original_size)))
 
 
-def _preview_sheet(maps, mockup, count):
-    """One image: chosen frames side by side, light map on top, mockup below (at the map's size)."""
-    n = min(maps.shape[0], mockup.shape[0])
-    idx = torch.linspace(0, n - 1, min(count, n)).round().long().tolist()
-    H, W = maps.shape[1:3]
-    mock = mockup[idx].to(maps.device).float()
-    if mock.shape[1:3] != (H, W):
-        mock = torch.nn.functional.interpolate(mock.permute(0, 3, 1, 2), size=(H, W), mode="bilinear",
-                                               align_corners=False).permute(0, 2, 3, 1)
-    top = torch.cat(list(maps[idx].float()), dim=1)
-    bottom = torch.cat(list(mock), dim=1)
-    return torch.cat([top, bottom], dim=0).unsqueeze(0).clamp(0, 1).cpu()
-
-
 class SourceClip(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -408,106 +198,6 @@ class SourceClip(io.ComfyNode):
         # the light stage editor shows the clip from this (web/js/lightstage.js)
         sheet = clip_sheet(images, fps)
         return io.NodeOutput(_out(images), n, fps, n / fps, ui={"openrelight_clip": [json.dumps(sheet)]})
-
-
-class GreenScreen(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_GreenScreen",
-            display_name="Green Screen Composite (OpenRelight)",
-            category=CATEGORY,
-            description="Key a green (or blue) screen out of the clip, despill it and put the background plate behind. "
-                        "Feed the composite to the relight, and the plate to the LM Lighting Director as its 'new "
-                        "background', so the subject is lit as that place would light it.",
-            is_output_node=True,
-            inputs=[io.Image.Input("images"),
-                    io.Image.Input("background", tooltip="The new background (a still plate, or a clip of the same length)."),
-                    io.Combo.Input("screen", options=["green", "blue"], default="green"),
-                    io.Float.Input("matte_low", default=0.2, min=0.0, max=1.0, step=0.01,
-                                   tooltip="Below this much screen colour a pixel stays fully foreground."),
-                    io.Float.Input("matte_high", default=0.7, min=0.0, max=1.0, step=0.01,
-                                   tooltip="Above this much screen colour a pixel is fully background."),
-                    io.Float.Input("matte_blur", default=1.0, min=0.0, max=10.0, step=0.1, tooltip="Matte softness, pixels."),
-                    io.Float.Input("background_blur", default=0.0, min=0.0, max=5.0, step=0.1,
-                                   tooltip="Defocus the plate (percent of the frame)."),
-                    io.Mask.Input("external_matte", optional=True,
-                                  tooltip="A foreground matte from your compositing software (white = keep). Used instead "
-                                          "of the built-in colour key for hard shots (heavy spill, tracking markers, glass).")],
-            outputs=[io.Image.Output(display_name="images"), io.Mask.Output(display_name="matte")],
-        )
-
-    @classmethod
-    def execute(cls, images, background, screen, matte_low, matte_high, matte_blur, background_blur,
-                external_matte=None) -> io.NodeOutput:
-        from .openrelight.key import key_composite
-        comp, alpha = key_composite(images.float(), background.float(), screen, matte_low, matte_high, matte_blur,
-                                    background_blur, matte=external_matte)
-        mid = comp.shape[0] // 2
-        preview = ui.PreviewImage(torch.cat([comp[mid:mid + 1], alpha[mid:mid + 1, ..., None].expand(-1, -1, -1, 3)]))
-        return io.NodeOutput(_out(comp), alpha, ui=preview)
-
-
-class RestoreBackground(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_RestoreBackground",
-            display_name="Restore Background Plate (OpenRelight)",
-            category=CATEGORY,
-            description="After the relight, put the green-screen plate back where the screen was (Green Screen "
-                        "Composite's matte): Qwen and H3 repaint the background (darker sky, other clouds); this keeps "
-                        "the plate exactly as chosen while the subject keeps its new light.",
-            inputs=[io.Image.Input("images"), io.Mask.Input("matte"), io.Image.Input("background"),
-                    io.Int.Input("frame_index", default=-1, min=-1, max=100000,
-                                 tooltip="-1: the matte has a frame per image. Otherwise the matte frame to use for a "
-                                         "single image (a keyframe)."),
-                    io.Float.Input("background_blur", default=0.0, min=0.0, max=5.0, step=0.1)],
-            outputs=[io.Image.Output(display_name="images")],
-        )
-
-    @classmethod
-    def execute(cls, images, matte, background, frame_index, background_blur) -> io.NodeOutput:
-        from .openrelight.key import restore_background
-        m = matte if matte.dim() == 3 else matte[None]
-        if frame_index >= 0:
-            m = m[min(frame_index, m.shape[0] - 1)][None]
-        return io.NodeOutput(_out(restore_background(images.float(), m.float(), background.float(), background_blur)))
-
-
-class ReferenceLights(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_ReferenceLights",
-            display_name="Reference Lights (OpenRelight)",
-            category=CATEGORY,
-            description="Find the lights of a lighting reference image (how many, from where, what colour, how bright "
-                        "relative to each other, how dark the rest is) with MoGe, and put them on the light stage. No "
-                        "image connected = nothing. A starting point to adjust; softness is not estimated.",
-            is_output_node=True,
-            inputs=[MoGeModelType.Input("moge_model"),
-                    io.Image.Input("image", optional=True, tooltip="The lighting reference (Load Image)."),
-                    io.Int.Input("max_lights", default=3, min=1, max=4)],
-            outputs=[LightRigType.Output(display_name="reference_lights"), io.String.Output(display_name="report")],
-        )
-
-    @classmethod
-    def execute(cls, moge_model, max_lights, image=None) -> io.NodeOutput:
-        if image is None:
-            return io.NodeOutput(None, "(no reference image)")
-        from comfy_extras.nodes_moge import MoGeInference
-        img = image[:1, ..., :3]
-        H, W = img.shape[1:3]
-        s = min(1.0, (0.5e6 / (H * W)) ** 0.5)
-        if s < 1.0:
-            img = comfy.utils.common_upscale(img.movedim(-1, 1), round(W * s), round(H * s), "area", "disabled").movedim(1, -1)
-        moge = MoGeInference.execute(moge_model, img, 4, 0.0, 1, True, True, 1).result[0]
-        geo = prepare_geometry(moge, temporal_sigma=0, stabilize_scale=False,
-                               device=comfy.model_management.get_torch_device())
-        rig, report = detect_reference_lights(img[0], geo, max_lights=max_lights)
-        # the light stage editor applies these from this message (web/js/lightstage.js)
-        return io.NodeOutput(rig, report, ui={"text": [report], "openrelight_reference": [json.dumps(rig, ensure_ascii=False)]})
 
 
 class DetectOriginalLight(io.ComfyNode):
@@ -599,40 +289,6 @@ class KeyframeSeeds(io.ComfyNode):
     @classmethod
     def execute(cls, seed0, seed1, seed2, seed3) -> io.NodeOutput:
         return io.NodeOutput(seed0, seed1, seed2, seed3)
-
-
-class ApproveKeyframes(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_ApproveKeyframes",
-            display_name="Approve Keyframes (OpenRelight)",
-            category=CATEGORY,
-            description="Shows the relit keyframes and stops here until 'approved' is on. Check them, redraw any with "
-                        "Keyframe Seeds, then turn 'approved' on and run again: the video is made from the cached keyframes.",
-            is_output_node=True,
-            inputs=[io.Image.Input("kf0"), io.Image.Input("kf1", optional=True), io.Image.Input("kf2", optional=True),
-                    io.Image.Input("kf3", optional=True),
-                    io.Boolean.Input("approved", default=False, tooltip="On = go on to the video.")],
-            outputs=[io.Image.Output(display_name=f"kf{i}") for i in range(4)],
-        )
-
-    @classmethod
-    def fingerprint_inputs(cls, approved, **kwargs):
-        return approved
-
-    @classmethod
-    def execute(cls, kf0, approved, kf1=None, kf2=None, kf3=None) -> io.NodeOutput:
-        from comfy_execution.graph_utils import ExecutionBlocker
-        kfs = [kf0] + [k if k is not None else kf0 for k in (kf1, kf2, kf3)]
-        shown = [k for k in (kf0, kf1, kf2, kf3) if k is not None]
-        H, W = shown[0].shape[1:3]
-        sheet = torch.cat([torch.nn.functional.interpolate(k[:1].permute(0, 3, 1, 2), size=(H, W), mode="bilinear",
-                                                           align_corners=False).permute(0, 2, 3, 1) for k in shown], 2)
-        preview = ui.PreviewImage(_out(sheet).float().cpu(), cls=cls)
-        if not approved:
-            return io.NodeOutput(*[ExecutionBlocker(None)] * 4, ui=preview)
-        return io.NodeOutput(*kfs, ui=preview)
 
 
 class KeyframeReview(io.ComfyNode):
@@ -744,56 +400,6 @@ class AddKeyframeGuides(io.ComfyNode):
         return io.NodeOutput(positive)
 
 
-class PolishPrompts(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_PolishPrompts",
-            display_name="Polish Prompts with LM (OpenRelight)",
-            category=CATEGORY,
-            description="Optional, off by default. An LM looks at one frame and the user's notes (light stage 'extra "
-                        "description'), writes the original's style and medium, and rewrites the notes as clear prompt "
-                        "language. It never changes the lights. Off: the prompts pass through and no LM is loaded.",
-            inputs=[
-                io.String.Input("keyframe_prompts", force_input=True),
-                io.String.Input("video_prompt", force_input=True),
-                LightRigType.Input("light_rig"),
-                io.Image.Input("images", tooltip="The clip; the LM sees its middle frame."),
-                io.Boolean.Input("enabled", default=False),
-                io.Combo.Input("engine", options=["built-in Gemma 4 E2B", "LM Studio"], default="built-in Gemma 4 E2B",
-                               tooltip="Built-in: connect a CLIP Loader with gemma4_e2b_it (type ltxv). LM Studio: its local "
-                                       "server must be running with a vision model loaded."),
-                io.Clip.Input("clip", optional=True, lazy=True, tooltip="Built-in engine only."),
-                io.String.Input("lmstudio_url", default="http://127.0.0.1:1234"),
-                io.String.Input("lmstudio_model", default="", tooltip="Empty = the model LM Studio has loaded."),
-            ],
-            outputs=[io.String.Output(display_name="keyframe_prompts"), io.String.Output(display_name="video_prompt"),
-                     io.String.Output(display_name="lm_notes", tooltip="What the LM wrote (style + polished notes).")],
-        )
-
-    @classmethod
-    def check_lazy_status(cls, enabled, engine, **kwargs):
-        return ["clip"] if enabled and engine.startswith("built-in") and "clip" in kwargs and kwargs["clip"] is None else []
-
-    @classmethod
-    def execute(cls, keyframe_prompts, video_prompt, light_rig, images, enabled, engine, lmstudio_url, lmstudio_model,
-                clip=None) -> io.NodeOutput:
-        if not enabled:
-            return io.NodeOutput(keyframe_prompts, video_prompt, "(LM off)")
-        frame = images[images.shape[0] // 2][None]
-        notes = (light_rig.get("user_prompt") or "").strip()
-        if engine.startswith("built-in"):
-            if clip is None:
-                raise ValueError("Polish Prompts: connect a CLIP Loader with gemma4_e2b_it (type ltxv) for the built-in engine.")
-            raw = lm.polish_with_gemma(clip, frame, notes)
-        else:
-            raw = lm.polish_with_lmstudio(lmstudio_url, lmstudio_model, frame, notes)
-        style, polished = lm.parse_polish(lm.clean_lm_output(raw) if "STYLE" not in raw else raw)
-        kf = PROMPT_SEP.join(lm.apply_polish(p, notes, style, polished) for p in keyframe_prompts.split(PROMPT_SEP))
-        return io.NodeOutput(kf, lm.apply_polish(video_prompt, notes, style, polished),
-                             f"STYLE: {style}\nNOTES: {polished or '(none)'}")
-
-
 class KeyframePlan(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -840,34 +446,6 @@ def _reset_between_runs():
         comfy_aimdo.model_vbar.vbars_reset_watermark_limits()
 
 
-class RelightPrompts(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_RelightPrompts",
-            display_name="Relight Prompts (OpenRelight)",
-            category=CATEGORY,
-            description="Every keyframe prompt (Qwen-Image 2.1 edit) and the MiniMax H3 prompt, written straight from the "
-                        "light rig with fixed templates: no LM, instant. Qwen and H3 read the frames themselves. Same "
-                        "outputs as LM Rewrite All; pick a keyframe's prompt with Pick Prompt.",
-            inputs=[
-                LightRigType.Input("light_rig"),
-                io.String.Input("keyframes", default="0,60,123", tooltip="Frame numbers (Keyframe Plan 'frames')."),
-                io.Int.Input("frame_count", default=121, min=1, max=10000),
-                io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=0.001),
-                io.Boolean.Input("mockup", default=True, tooltip="Keyframes edit the Light Map mockup (light painted on)."),
-            ],
-            outputs=[io.String.Output(display_name="keyframe_prompts", tooltip="All keyframe prompts; use Pick Prompt."),
-                     io.String.Output(display_name="video_prompt")],
-        )
-
-    @classmethod
-    def execute(cls, light_rig, keyframes, frame_count, fps, mockup) -> io.NodeOutput:
-        kfs = [int(x) for x in keyframes.replace(" ", "").split(",") if x]
-        prompts = [lm.keyframe_prompt(light_rig, f, frame_count, fps, mockup=mockup) for f in kfs]
-        return io.NodeOutput(PROMPT_SEP.join(prompts), lm.video_prompt(light_rig, frame_count, fps))
-
-
 class LightingDirector(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -884,7 +462,7 @@ class LightingDirector(io.ComfyNode):
             is_output_node=True,
             inputs=[
                 io.String.Input("keyframe_prompts", force_input=True, optional=True,
-                                tooltip="Optional: other fallback prompts (Relight Prompts). Unconnected, the director writes them."),
+                                tooltip="Optional: your own fallback prompts. Unconnected, the director writes them."),
                 io.String.Input("video_prompt", force_input=True, optional=True),
                 LightRigType.Input("light_rig"),
                 io.Image.Input("images", tooltip="The clip; the LM sees the frames at the keyframes."),
@@ -899,7 +477,9 @@ class LightingDirector(io.ComfyNode):
                                default="lighting reference",
                                tooltip="green screen: the reference is the plate that replaces the green screen; connect it "
                                        "to the keyframes' Qwen encoders as image 2 too."),
-                io.Boolean.Input("mockup", default=True, tooltip="Keyframes edit the Light Map mockup (adds its note)."),
+                io.Boolean.Input("mockup", default=False,
+                                 tooltip="Only for keyframe images with a light guide painted on them: adds a note that the "
+                                         "painted light is a guide. Leave off when the keyframes edit the original frames."),
                 io.Int.Input("seed", default=7, min=0, max=2**31 - 1),
                 io.String.Input("scene", force_input=True, optional=True,
                                 tooltip="Detect Original Light's scene: the director matches the stage's lights to it (a light "
@@ -960,159 +540,7 @@ def _fit_long_side(images, size):
     return comfy.utils.common_upscale(images.movedim(-1, 1), round(W * s), round(H * s), "area", "disabled").movedim(1, -1)
 
 
-class LMRewriteAll(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_LMRewriteAll",
-            display_name="LM Rewrite All Prompts (OpenRelight)",
-            category=CATEGORY,
-            description="Write every keyframe prompt (Qwen-Image 2.1 prompt enhancer) and the MiniMax H3 prompt in one "
-                        "node, from two LM rewrites: one shared by all keyframes (each adds where the light comes from "
-                        "at its frame) and one for the video. Pick a keyframe's prompt with Pick Prompt.",
-            inputs=[
-                io.Clip.Input("clip", tooltip="CLIP Loader: qwen3.5_9b_qwen_image_2.1_pe_i2i, type qwen_image."),
-                LightRigType.Input("light_rig"),
-                io.Image.Input("images", tooltip="The clip (any resolution); the LM looks at each keyframe's frame."),
-                io.String.Input("keyframes", default="0,12,24,36,48,60,72,84", tooltip="Frame numbers, comma separated."),
-                io.Int.Input("frame_count", default=121, min=1, max=10000),
-                io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=0.001),
-                io.Boolean.Input("mockup", default=True, tooltip="Keyframes edit the Light Map mockup (see Lighting Brief)."),
-                io.String.Input("video_frames", default="0,24,48,72",
-                                tooltip="Frames the LM sees to write the H3 prompt. Empty = no video prompt."),
-                io.Int.Input("seed", default=7, min=0, max=2 ** 31 - 1),
-                io.Int.Input("max_length", default=6144, min=256, max=16384,
-                             tooltip="Token limit per rewrite. The enhancer reasons for thousands of tokens before it "
-                                     "answers; past the limit the brief is used as it is."),
-            ],
-            outputs=[io.String.Output(display_name="keyframe_prompts", tooltip="All keyframe prompts; use Pick Prompt."),
-                     io.String.Output(display_name="video_prompt")],
-        )
-
-    @classmethod
-    def execute(cls, clip, light_rig, images, keyframes, frame_count, fps, mockup, video_frames, seed,
-                max_length) -> io.NodeOutput:
-        kfs = [int(x) for x in keyframes.replace(" ", "").split(",") if x]
-        vf = [int(x) for x in video_frames.replace(" ", "").split(",") if x]
-        video_images = images[[min(f, images.shape[0] - 1) for f in vf]] if vf else None
-        pbar = comfy.utils.ProgressBar(len(kfs) + (1 if vf else 0))
-        prompts, video = lm.rewrite_all(clip, light_rig, images, kfs, frame_count, fps, mockup=mockup,
-                                        video_images=video_images, seed=seed, max_length=max_length,
-                                        progress=lambda i, n: pbar.update_absolute(i, n), between=_reset_between_runs)
-        return io.NodeOutput(PROMPT_SEP.join(prompts), video)
-
-
-class PickPrompt(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_PickPrompt",
-            display_name="Pick Prompt (OpenRelight)",
-            category=CATEGORY,
-            description="One keyframe's prompt out of LM Rewrite All's keyframe_prompts (index 0 = first keyframe).",
-            inputs=[io.String.Input("prompts", force_input=True), io.Int.Input("index", default=0, min=0, max=99)],
-            outputs=[io.String.Output(display_name="prompt")],
-        )
-
-    @classmethod
-    def execute(cls, prompts, index) -> io.NodeOutput:
-        items = prompts.split(PROMPT_SEP)
-        return io.NodeOutput(items[min(index, len(items) - 1)])
-
-
-class CleanLMText(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_CleanLMText",
-            display_name="Clean LM Text (OpenRelight)",
-            category=CATEGORY,
-            description="Keep only the final answer from 'Generate Text': drops <think> blocks and reasoning written before the answer.",
-            inputs=[io.String.Input("text", force_input=True),
-                    io.String.Input("append", force_input=True, optional=True,
-                                    tooltip="Added after the answer, e.g. 'after_lm' from Lighting Brief.")],
-            outputs=[io.String.Output(display_name="text")],
-        )
-
-    @classmethod
-    def execute(cls, text, append="") -> io.NodeOutput:
-        out = lm.clean_lm_output(text)
-        return io.NodeOutput(f"{out} {append.strip()}" if append and append.strip() else out)
-
-
-class DetailLock(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_DetailLock",
-            display_name="Detail Lock (OpenRelight)",
-            category=CATEGORY,
-            description="Keep the original's face and detail; take only the lighting from the generated video. Adds composite-mode lights.",
-            inputs=[
-                io.Image.Input("original"),
-                io.Image.Input("generated", tooltip="Any resolution or frame count; resampled to the original."),
-                io.Mask.Input("mask", optional=True, tooltip="Where to lock detail (usually the subject). Outside it the generation is kept."),
-                io.Image.Input("composite_layer", optional=True, tooltip="'composite_layer' from Light Pass."),
-                io.Float.Input("radius", default=0.03, min=0.005, max=0.15, step=0.005,
-                               tooltip="Low-pass radius as a fraction of the frame. Smaller = more of the generation's shading detail."),
-                io.Float.Input("strength", default=0.85, min=0.0, max=1.0, step=0.05, tooltip="0 = pure generation, 1 = fully locked."),
-                io.Float.Input("highlights", default=0.5, min=0.0, max=1.5, step=0.05,
-                               tooltip="Bring back specular highlights the generation added."),
-                io.Float.Input("layer_strength", default=1.0, min=0.0, max=3.0, step=0.05),
-            ],
-            outputs=[io.Image.Output(display_name="image")],
-        )
-
-    @classmethod
-    def execute(cls, original, generated, radius, strength, highlights, layer_strength, mask=None,
-                composite_layer=None) -> io.NodeOutput:
-        pbar = comfy.utils.ProgressBar(original.shape[0])
-        out = detail_lock(original, generated, mask=mask, layer=composite_layer, radius=radius, strength=strength,
-                          highlights=highlights, layer_strength=layer_strength,
-                          device=comfy.model_management.get_torch_device(),
-                          progress=lambda i, n: pbar.update_absolute(i, n))
-        return io.NodeOutput(_out(out))
-
-
-class DetectLights(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="OR_DetectLights",
-            display_name="Detect Lights (OpenRelight)",
-            category=CATEGORY,
-            description="Estimate the clip's dominant light direction and add it to a rig as a starting key light.",
-            inputs=[
-                io.Image.Input("images"),
-                GeometryType.Input("geometry"),
-                LightRigType.Input("light_rig", optional=True),
-            ],
-            outputs=[LightRigType.Output(display_name="light_rig"), io.String.Output(display_name="report")],
-        )
-
-    @classmethod
-    def execute(cls, images, geometry, light_rig=None) -> io.NodeOutput:
-        dev = geometry["normal"].device
-        coeffs = []
-        step = max(1, images.shape[0] // 24)
-        for t in range(0, min(images.shape[0], geometry["normal"].shape[0]), step):
-            lin = srgb_to_linear(images[t].to(dev).float())
-            region = geometry["valid"][t] & (geometry["alpha"][t] > 0.5)
-            coeffs.append(fit_sh1(lin, geometry["normal"][t], region))
-        az, el, strength = detect_dominant_light(torch.stack(coeffs))
-        rig = rigmod.load_rig(light_rig or {})
-        detected = rigmod.load_rig({"lights": [{
-            "id": "detected_key", "name": "Detected key", "type": "area", "mode": "generate",
-            "color": {"kelvin": 5600}, "softness": 0.5,
-            "keys": [{"frame": 0, "azimuth": round(az, 1), "elevation": round(el, 1), "distance": 1.5,
-                      "intensity_ev": 0.0}],
-        }]})["lights"][0]
-        rig["lights"] = [detected] + [l for l in rig["lights"] if l.get("id") != "detected_key"]
-        report = f"Dominant light: azimuth {az:.0f} deg, elevation {el:.0f} deg, directional strength {strength:.2f}"
-        return io.NodeOutput(rig, report)
-
-
 class OpenRelightExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [SourceClip, GreenScreen, RestoreBackground, ReferenceLights, LightRig, GeometryPrep, LightPass, RigToPrompt, LightingBrief, LightMap, CleanLMText, DetectOriginalLight, KeyframeSeeds, KeyframeReview, EncodeFirst, AddKeyframeGuides, ApproveKeyframes, KeyframePlan, RelightPrompts, LightingDirector, PolishPrompts, LMRewriteAll, PickPrompt, LightGuard, FitPad, Unpad, DetailLock, DetectLights]
+        return [SourceClip, LightRig, GeometryPrep, DetectOriginalLight, KeyframeSeeds, KeyframeReview, EncodeFirst, AddKeyframeGuides, KeyframePlan, LightingDirector, FitPad, Unpad]

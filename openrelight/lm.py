@@ -6,59 +6,12 @@ it with a vision LM that sees the actual frame:
   - video brief    -> Qwen3-VL                        -> MiniMax H3 prompt (timestamps kept)
 """
 
-import glob
-import json
 import math
-import os
 import re
 
-from .prompt import (FILMS, GRADES, LOOKS, PREAMBLE, TYPE_WORDS, _color_words, ambient_words, as_change, intensity_words,
-                     kelvin_words, removed_original_words, rig_to_prompt, stage_lights)
+from .prompt import FILMS, GRADES, LOOKS, PREAMBLE, removed_original_words, stage_lights
 from .rig import evaluate_light, filled_keys
 from . import pro
-
-
-def frame_direction_words(az, el):
-    """Direction as seen in the frame (image editors think in screen space, not the subject's left/right)."""
-    a = ((az + 180.0) % 360.0) - 180.0
-    side = "right" if a > 0 else "left"
-    m = abs(a)
-    if m <= 22.5:
-        horiz = "from the camera position, straight onto the people"
-    elif m <= 67.5:
-        horiz = f"from the front, off to the {side} of the frame"
-    elif m <= 112.5:
-        horiz = f"from the {side} edge of the frame, at a right angle to the camera"
-    elif m <= 157.5:
-        horiz = f"from behind the people, on the {side} of the frame"
-    else:
-        horiz = "from directly behind the people, facing the camera"
-    if el > 60:
-        return horiz + ", from high overhead"
-    if el > 25:
-        return horiz + ", angled down from above"
-    if el < -25:
-        return horiz + ", angled up from below"
-    return horiz + ", at head height"
-
-
-def landing_words(az):
-    """Where the light lands on the people: the part an editing model must get right."""
-    a = ((az + 180.0) % 360.0) - 180.0
-    side = "right" if a > 0 else "left"
-    other = "left" if a > 0 else "right"
-    m = abs(a)
-    if m <= 22.5:
-        return "faces and fronts of bodies are lit head-on, with little shadow on the faces"
-    if m <= 67.5:
-        return (f"the {side}-facing half of each face is lit and the {other} half falls into soft shadow "
-                "(classic key light)")
-    if m <= 112.5:
-        return (f"only the {side}-facing side of each face, ear and shoulder is lit; the {other} side of "
-                "each face stays dark (split lighting)")
-    if m <= 157.5:
-        return f"a bright rim outlines the {side} edges of heads and shoulders; faces stay mostly in shadow"
-    return "a bright rim outlines every head and shoulder; faces and fronts stay in shadow (silhouette)"
 
 
 def source_in_frame(s, fov_x=55.0, aspect=16 / 9):
@@ -97,215 +50,11 @@ def offscreen_note(rig, frame_count, fps, frames=None):
     return OFFSCREEN_NOTE
 
 
-def light_state_words(light, frame, frame_count, fps, landing=True, direction=True):
-    """landing=False leaves out where the light falls on the people (a mock-up already shows it).
-    direction=False also leaves out where the light comes from (added per keyframe by direction_words)."""
-    s = evaluate_light(light, frame, frame_count, fps)
-    keys = filled_keys(light, frame_count, fps)
-    ev_now = math.log2(max(s["intensity"], 1e-4))
-    if ev_now < max(k["intensity_ev"] for k in keys) - 3:
-        return f"The {TYPE_WORDS.get(s['type'], 'light')} is off at this moment."
-    kelvin = keys[0]["kelvin"]
-    for k in keys:
-        if k["_frame"] <= frame:
-            kelvin = k["kelvin"]
-    softness = s["softness"]
-    quality = ("hard-edged, with crisp shadow edges" if softness < 0.3
-               else "soft and diffused, with gentle shadow edges" if softness > 0.6 else "medium-soft")
-    # with a mock-up the image already shows the pool of light; "spotlight beam" made the editor draw a
-    # visible cone from a lamp in the shot, so the light is only named as a hard / soft light then
-    kind = TYPE_WORDS.get(s["type"], "light") if landing else ("light" if s["type"] != "spot" else "key light")
-    head = " ".join(w for w in (intensity_words(ev_now), _color_words(light, kelvin), kind) if w)
-    where = f" {frame_direction_words(s['azimuth'], s['elevation'])}" if direction else ""
-    text = f"A {head} shines{where}; it is {quality}."
-    if not direction:
-        # a shared rewrite: each keyframe adds its own direction, so the LM must not invent one
-        text += " Do not say which direction it comes from; that is added separately for each frame."
-    if landing:
-        text += f" On the people, {landing_words(s['azimuth'])}."
-    if s["type"] == "spot" and landing:
-        text += " It is a focused beam: a pool of light with falloff to darkness around it, not an even wash."
-    if light.get("prompt"):
-        text += f" ({light['prompt']})"
-    return text
-
-
 # The mock-up is MoGe geometry lit by the rig: it knows directions, not materials. Copied exactly it
 # looks like CG (hard terminators, plaster shading), so the editor only takes direction and coverage from it.
 MOCKUP_NOTE = ("The light roughly painted onto this image is only a guide to where the new light comes from and "
                "which areas it reaches; render it as natural light in the image's own style, not as a copy of "
                "the painted shading.")
-
-
-def direction_words(rig, frame, frame_count, fps):
-    """Where each lit light comes from at this frame, one sentence each (appended to a shared LM prompt)."""
-    out = []
-    for light in rig["lights"]:
-        if not light.get("enabled", True):
-            continue
-        s = evaluate_light(light, frame, frame_count, fps)
-        keys = filled_keys(light, frame_count, fps)
-        if math.log2(max(s["intensity"], 1e-4)) < max(k["intensity_ev"] for k in keys) - 3:
-            continue
-        out.append(f"At this moment the new light comes {frame_direction_words(s['azimuth'], s['elevation'])}.")
-    return " ".join(out)
-
-
-def keyframe_brief(rig, frame, frame_count, fps, mockup=False, extra="", direction=True):
-    """Instruction for an image editor relighting one frame of the clip (the frame is <image1>).
-
-    mockup: <image1> is the frame with the rig's light already painted on (Light Map 'mockup'). Where the
-    light falls then comes from the scene's geometry, and the text only asks for real-looking light.
-    Without it the text has to say where the light lands, guessed from the light's angle alone, which is
-    wrong whenever people don't face the camera (a light from the right is a rim light on people facing left).
-    """
-    if mockup:
-        lines = ["<image1> is a frame of a film whose new lighting has been roughly painted on. Turn it into a real "
-                 "photograph lit by real film lights: keep every person's face, identity, expression, pose, hair, "
-                 "clothing, every object, the framing and the camera exactly as they are. Real skin texture, real "
-                 "fabric, film-like contrast, no plastic, painted or CGI look."]
-    else:
-        lines = ["Relight <image1>. Change only the lighting: keep every person's face, identity, expression, pose, "
-                 "hair, clothing, every object, the framing and the camera exactly as they are. Keep it photographic "
-                 "and real: real skin texture, real fabric, film-like contrast, no plastic or CGI look."]
-    for light in rig["lights"]:
-        if light.get("enabled", True):
-            lines.append(light_state_words(light, frame, frame_count, fps, landing=not mockup, direction=direction))
-    lines.append(ambient_words(rig))
-    look = rig.get("look") or {}
-    looks = [w for w in (LOOKS.get(look.get("preset", ""), look.get("preset", "")),
-                         FILMS.get(look.get("film", ""), look.get("film", "")),
-                         GRADES.get(look.get("grade", ""), look.get("grade", ""))) if w]
-    if looks:
-        lines.append(", ".join(looks).capitalize() + ".")
-    lines.append(offscreen_note(rig, frame_count, fps, frames=[frame]))
-    for text in (rig.get("user_prompt", ""), extra):
-        if text and text.strip():
-            lines.append(text.strip())
-    return " ".join(l for l in lines if l)
-
-
-def video_brief(rig, frame_count, fps, extra=""):
-    """Brief for the LM that writes the video prompt: rig_to_prompt without the preamble."""
-    text = "Lighting brief from the director: " + rig_to_prompt(rig, frame_count, fps, preamble=False,
-                                                                include_composite=False, extra=extra)
-    note = offscreen_note(rig, frame_count, fps)
-    return f"{text} {note}" if note else text
-
-
-VIDEO_LM_SYSTEM = """You write prompts for MiniMax H3, a reference-to-video model that re-renders a reference clip.
-<Video 1> is the original clip. Anchored keyframes already show the target lighting at certain moments.
-You receive frames of the clip and a lighting brief with timestamps from the director.
-
-Write ONE paragraph in English, 90 to 160 words:
-1. Start with: "Keep every person's face, identity, expression, body motion, wardrobe, framing, camera movement and timing exactly the same as <Video 1>. Only the lighting changes."
-2. Name the setting in a few words from what you see (e.g. "a dark ship cabin with several crew members").
-3. Describe each light as a real film light: type, colour, hardness, and where it lands on the people (which side of the faces, rim, pool of light). If the brief says the light comes from off-screen, say that neither the source nor the beam itself is visible, only where the light lands.
-4. For moving or changing lights, describe the change in chronological order WITH the director's timestamps ("from 0.0s to 3.0s the beam sweeps from ... to ..."). Never drop or change a timestamp.
-5. End with the look in a few words (film stock, contrast, grade) if the brief has one, and "photographic, real skin texture".
-Do not invent lights, people, objects or camera moves. No headings, no lists, no quotes around the answer."""
-
-def clean_lm_output(text):
-    """Keep only the final answer of an LM rewrite.
-
-    The Qwen 2.1 prompt enhancer sometimes writes its reasoning in plain text before the answer
-    (no <think> tags); the answer is then the last paragraph, after a blank-line gap.
-    """
-    text = text.split("</think>")[-1].strip()
-    if "\n\n\n" in text:
-        text = text.split("\n\n\n")[-1]
-    elif "\n\n" in text:
-        paras = [p.strip() for p in text.split("\n\n") if p.strip()]
-        text = paras[-1] if paras else text
-    return text.strip().strip('{}"').strip()
-
-
-_PE_FALLBACK = ("You rewrite image-editing instructions into one precise, unambiguous editing directive anchored on "
-                "what the input image shows. Keep everything the user did not ask to change. Output only the directive.")
-
-
-def qwen_edit_system_prompt():
-    """The official Qwen-Image 2.1 edit prompt-enhancer system prompt, read from the installed workflow templates.
-
-    The PE model is tuned to it, so we reuse it rather than ship our own copy. Falls back to a short prompt.
-    """
-    try:
-        import comfyui_workflow_templates_json as pkg
-        base = os.path.dirname(pkg.__file__)
-    except Exception:
-        return _PE_FALLBACK
-    for path in sorted(glob.glob(os.path.join(base, "templates", "image_qwen_image_2_1*edit*.json"))):
-        try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            continue
-        for sg in data.get("definitions", {}).get("subgraphs", []):
-            for node in sg.get("nodes", []):
-                if node.get("type") == "PrimitiveStringMultiline" and "Prompt Enhancer" in str(node.get("widgets_values")):
-                    return node["widgets_values"][0]
-    return _PE_FALLBACK
-
-
-# Sampling the Qwen 2.1 prompt enhancer is tuned for (its workflow template). Greedy decoding writes its
-# reasoning into the answer; thinking mode tucks the answer inside the reasoning.
-PE_SAMPLING = {"do_sample": True, "temperature": 1.0, "top_k": 20, "top_p": 0.95, "min_p": 0.0,
-               "repetition_penalty": 1.0, "presence_penalty": 0.0}
-
-
-_REASONING = ("the user", "let me", "okay", "first,", "we need", "i need", "draft", "wait", "also", "check",
-              "one more", "i must", "the instruction", "hmm", "actually", "or\"", "avoid")
-
-
-def looks_unfinished(text, limit_chars=2500):
-    """The enhancer reasons in plain text for thousands of tokens before answering; cut off by max_length,
-    the 'answer' is a piece of that reasoning ("Wait - ...", "Also ...", "Check draft: ...")."""
-    t = text.strip()
-    low = t.lower()
-    return (not t or len(t) > limit_chars or low.startswith(_REASONING)
-            or any(w in low for w in ("draft", "the instruction says", "let me ", "i must ")))
-
-
-def rewrite(clip, prompt, system, image=None, seed=7, max_length=2048):
-    """One LM rewrite with a ComfyUI text-generation CLIP (what core 'Generate Text' does), cleaned.
-    Returns the brief itself when the LM rambles past max_length or never reaches an answer."""
-    tokens = clip.tokenize(prompt, image=image, skip_template=False, min_length=1, thinking=False,
-                           system_prompt=system)
-    ids = clip.generate(tokens, max_length=max_length, seed=seed, mtp=True, **PE_SAMPLING)
-    text = clean_lm_output(clip.decode(ids))
-    return prompt if looks_unfinished(text) else text
-
-
-def rewrite_all(clip, rig, frames, keyframes, frame_count, fps, mockup=True, video_images=None, seed=7,
-                max_length=6144, progress=None, between=None):
-    """The keyframe prompts and the video prompt from two LM rewrites.
-
-    The Qwen 2.1 prompt enhancer reasons for 3-5k tokens before it answers, so one rewrite per keyframe
-    was ~12 min for 8 keyframes. The keyframes differ only in where the light comes from (and the mock-up
-    already shows where it lands), so one rewrite of the brief without direction is shared, and each
-    keyframe appends its own direction sentence. frames: (T, H, W, 3) the clip the LM looks at.
-    Returns (list of keyframe prompts, video prompt or "")."""
-    n = 1 + (1 if video_images is not None else 0)
-    mid = keyframes[len(keyframes) // 2]
-    shared = rewrite(clip, keyframe_brief(rig, mid, frame_count, fps, mockup=mockup, direction=False),
-                     qwen_edit_system_prompt(), frames[min(mid, frames.shape[0] - 1)][None], seed, max_length)
-    if between:
-        between()
-    if progress:
-        progress(1, n)
-    prompts = []
-    for f in keyframes:
-        after = " ".join(t for t in (direction_words(rig, f, frame_count, fps), MOCKUP_NOTE if mockup else "",
-                                     offscreen_note(rig, frame_count, fps, frames=[f])) if t)
-        prompts.append(f"{shared} {after}".strip())
-    video = ""
-    if video_images is not None:
-        after = offscreen_note(rig, frame_count, fps)
-        text = rewrite(clip, video_brief(rig, frame_count, fps), VIDEO_LM_SYSTEM, video_images, seed, max_length)
-        video = f"{text} {after}".strip()
-        if progress:
-            progress(n, n)
-    return prompts, video
 
 
 # ---------------------------------------------------------------- fixed templates (no LM)
@@ -335,7 +84,7 @@ def _user(rig):
 def keyframe_prompt(rig, frame, frame_count, fps, mockup=True):
     """Qwen-Image 2.1 edit prompt for one keyframe, from the light stage alone: the task, the user's own words
     first, then the stage as a lighting plot in units (pro.py). A lighting reference image reaches the prompt
-    as lights on the stage (Reference Lights): given to Qwen as image 2 it changed almost nothing."""
+    as lights on the stage: given to Qwen as image 2 it changed almost nothing."""
     lines = [KEYFRAME_TASK, _user(rig)]
     described = list(stage_lights(rig, frame_count, fps))
     if described:
@@ -373,79 +122,6 @@ def video_prompt(rig, frame_count, fps):
     if lights:
         lines.append(offscreen_note(rig, frame_count, fps))
     return " ".join(l for l in lines if l)
-
-
-# ---------------------------------------------------------------- optional LM polish (off by default)
-# What the user asked the LM for: polish the user's own notes, and fill in what they leave out about the
-# original's style, so the edit stays in that style. It never decides the lighting: that is the stage's.
-POLISH_SYSTEM = (
-    "You help a video relighting tool. You see one frame of the original video and the user's own notes.\n"
-    "Reply with exactly two lines and nothing else:\n"
-    "STYLE: up to 25 words on the original's visual style and medium (for example live-action film, anime, 3D "
-    "animation, oil painting), its colour palette and contrast. Do not describe the lighting direction.\n"
-    "NOTES: the user's notes rewritten as clear, concrete prompt language for an image or video model, keeping "
-    "their meaning. Add no lights, directions or colours the user did not write. If the notes are empty, write NONE.")
-
-
-def parse_polish(text):
-    """'STYLE: ...\nNOTES: ...' -> (style, notes); missing parts come back empty."""
-    style, notes = "", ""
-    for line in text.splitlines():
-        head, _, rest = line.partition(":")
-        if head.strip().upper() == "STYLE":
-            style = rest.strip()
-        elif head.strip().upper() == "NOTES":
-            notes = rest.strip()
-    if notes.upper().strip(". ") == "NONE":
-        notes = ""
-    return style, notes
-
-
-def polish_with_gemma(clip, frame, notes, max_length=300):
-    """Built-in Gemma 4 (ComfyUI text generation), Gemma 4 chat format with one image."""
-    prompt = (f"<|turn>system\n{POLISH_SYSTEM}<turn|>\n"
-              f"<|turn>user\n<|image><|image|><image|>\n\nUser notes: {notes or '(empty)'}<turn|>\n"
-              f"<|turn>model\n<|channel>final\n")
-    tokens = clip.tokenize(prompt, image=frame, skip_template=True, min_length=1, thinking=False)
-    ids = clip.generate(tokens, do_sample=False, max_length=max_length, temperature=1.0, top_k=50, top_p=1.0,
-                        min_p=0.0, repetition_penalty=1.0, presence_penalty=0.0, seed=0, mtp=True)
-    return clip.decode(ids)
-
-
-def polish_with_lmstudio(url, model, frame, notes, max_tokens=300, timeout=180):
-    """LM Studio's local OpenAI-compatible server; asks it to unload the model a minute after use (ttl) so it
-    does not hold GPU memory while ComfyUI runs the image and video models."""
-    import base64
-    import io as _io
-    import urllib.request
-
-    from PIL import Image
-    buf = _io.BytesIO()
-    Image.fromarray((frame[0].clamp(0, 1).cpu().numpy() * 255).astype("uint8")).save(buf, format="JPEG", quality=90)
-    body = {"messages": [{"role": "system", "content": POLISH_SYSTEM},
-                         {"role": "user", "content": [
-                             {"type": "text", "text": f"User notes: {notes or '(empty)'}"},
-                             {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,"
-                                                                       + base64.b64encode(buf.getvalue()).decode()}}]}],
-            "max_tokens": max_tokens, "temperature": 0.2, "ttl": 60}
-    if model:
-        body["model"] = model
-    req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)["choices"][0]["message"]["content"]
-
-
-def apply_polish(prompt, user_notes, style, notes):
-    """Swap the user's raw notes for the polished ones and add the original's style."""
-    out = prompt
-    if notes and user_notes and user_notes.strip() in out:
-        out = out.replace(user_notes.strip(), notes)
-    elif notes:
-        out = f"{out} {notes}"
-    if style:
-        out = f"{out} Keep the original's look: {style.rstrip('.')}."
-    return out
 
 
 # ---------------------------------------------------------------- LM lighting director (2026-10-29)
@@ -590,13 +266,6 @@ GREENSCREEN_NOTE = ("Every green area (behind the subject, through windows and g
                     "tracking marker or green spill remains on the subject or the set.")
 GREENSCREEN_VIDEO = ("The green screen of <Video 1> is replaced by the background shown in the guide frames in every "
                      "frame; no green, tracking marker or green spill remains.")
-
-
-def _strip(text, *parts):
-    for p in parts:
-        if p:
-            text = text.replace(p, "")
-    return " ".join(text.split())
 
 
 # The LM gets plain facts, not the template's prose: given "crisp, well-defined shadow edges (narrow penumbra)"

@@ -163,8 +163,6 @@ The stage writes plain JSON, and you can edit it by hand. See [`dev/demo_rigs`](
 
 Run the unit tests with `python tests/test_core.py`.
 
-The package still contains some nodes from earlier experiments, such as Light Pass, Light Map and Detail Lock. The main workflow does not use them.
-
 ## License
 
 The code is under the [MIT License](LICENSE). The models have their own terms, so read them before you use the models, especially for commercial work:
